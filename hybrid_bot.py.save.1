@@ -1,0 +1,134 @@
+import logging
+import time
+import pandas as pd
+import numpy as np
+from kiteconnect import KiteConnect
+
+# --- CREDENTIALS ---
+API_KEY = "jnte5vc1eukpl9ex"
+ACCESS_TOKEN = "XvhNE0d7MKA0JMdQk9qk82xyau6yLnl3"
+
+# --- 🏆 CONFIGURATION ---
+SYMBOL = "NIFTY 50"
+TOKEN_FUT = 123456        # Update this monthly!
+
+# Capital & Risk
+INITIAL_CAPITAL = 1500000.0  # Updated to 15 Lakhs
+QTY_PER_TRADE = 50           # 1 Lot
+
+# Decision Thresholds (Optimized)
+ADX_THRESHOLD = 40        
+OI_CHANGE_LIMIT = -5      
+
+# Strategy Parameters
+WAVE_GAP = 15             
+SURVIVOR_BREAKOUT = 40    
+
+# --- LOGGING SETUP ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+logger = logging.getLogger("HybridBot")
+
+# --- HELPER: ADX CALCULATION ---
+def calculate_adx(df, period=14):
+    df['h-l'] = df['high'] - df['low']
+    df['h-c'] = abs(df['high'] - df['close'].shift(1))
+    df['l-c'] = abs(df['low'] - df['close'].shift(1))
+    df['tr'] = df[['h-l', 'h-c', 'l-c']].max(axis=1)
+    df['up_move'] = df['high'] - df['high'].shift(1)
+    df['down_move'] = df['low'].shift(1) - df['low']
+    df['plus_dm'] = np.where((df['up_move'] > df['down_move']) & (df['up_move'] > 0), df['up_move'], 0)
+    df['minus_dm'] = np.where((df['down_move'] > df['up_move']) & (df['down_move'] > 0), df['down_move'], 0)
+    df['tr_smooth'] = df['tr'].ewm(alpha=1/period, adjust=False).mean()
+    df['plus_di'] = 100 * (df['plus_dm'].ewm(alpha=1/period, adjust=False).mean() / df['tr_smooth'])
+    df['minus_di'] = 100 * (df['minus_dm'].ewm(alpha=1/period, adjust=False).mean() / df['tr_smooth'])
+    df['dx'] = 100 * abs(df['plus_di'] - df['minus_di']) / (df['plus_di'] + df['minus_di'])
+    df['adx'] = df['dx'].ewm(alpha=1/period, adjust=False).mean()
+    return df['adx'].iloc[-1]
+
+# --- MOCK STRATEGIES ---
+class MockWaveStrategy:
+    def run(self, price):
+        logger.info(f"🌊 [WAVE ACTIVE] Grid Trading | Gap: {WAVE_GAP} | Center: {price:.2f}")
+
+class MockSurvivorStrategy:
+    def run(self, price, trend):
+        logger.info(f"🚀 [SURVIVOR ACTIVE] Trend: {trend} | Breakout Level: {SURVIVOR_BREAKOUT}")
+
+# --- SUPERVISOR BOT ---
+class HybridSupervisor:
+    def __init__(self):
+        logger.info(f"🔑 Connecting to Kite...")
+        logger.info(f"💰 Capital Limit Set: ₹ {INITIAL_CAPITAL:,.2f}")
+        self.kite = KiteConnect(api_key=API_KEY)
+        self.kite.set_access_token(ACCESS_TOKEN)
+        
+        self.active_mode = "NEUTRAL"
+        self.wave = MockWaveStrategy()
+        self.survivor = MockSurvivorStrategy()
+
+    def check_margin(self):
+        # In Paper Mode, we just check our config
+        # In Live Mode, uncomment the lines below:
+        # margins = self.kite.margins()
+        # available = margins['equity']['available']['live_balance']
+        available = INITIAL_CAPITAL # Mock balance for now
+        
+        required = 150000 # Approx margin for 1 lot Nifty Futures
+        if available < required:
+            logger.error(f"❌ INSUFFICIENT MARGIN! Needed: {required}, Have: {available}")
+            return False
+        return True
+
+    def get_data(self):
+        # SIMULATED DATA 
+        data = {
+            'close': np.random.normal(26000, 50, 100),
+            'high': np.random.normal(26050, 50, 100),
+            'low': np.random.normal(25950, 50, 100),
+            'oi': np.random.randint(100000, 200000, 100)
+        }
+        df = pd.DataFrame(data)
+        if np.random.random() > 0.8: df['close'] = np.linspace(26000, 26400, 100) 
+        return df
+
+    def decide(self):
+        # 1. Safety Check
+        if not self.check_margin(): return
+
+        try:
+            # 2. Data & Indicators
+            df = self.get_data()
+            adx = calculate_adx(df)
+            curr_oi = df['oi'].iloc[-1]
+            prev_oi = df['oi'].iloc[-2]
+            oi_change = ((curr_oi - prev_oi) / prev_oi) * 100
+            price = df['close'].iloc[-1]
+            
+            print(f"\n📊 STATUS: Price={price:.0f} | ADX={adx:.1f} | OI Change={oi_change:.2f}%")
+            
+            # 3. Decision Logic (Optimized ADX > 40)
+            if adx > ADX_THRESHOLD or oi_change < OI_CHANGE_LIMIT:
+                if self.active_mode != "SURVIVOR":
+                    logger.warning("⚠️ REGIME CHANGE: STRONG TREND DETECTED! Switching to Survivor.")
+                
+                self.active_mode = "SURVIVOR"
+                trend = "UP" if price > df['close'].iloc[-10] else "DOWN"
+                self.survivor.run(price, trend)
+                
+            else:
+                if self.active_mode != "WAVE":
+                    logger.info("✅ REGIME CHANGE: CHOPPY/WEAK TREND. Switching to Wave.")
+                
+                self.active_mode = "WAVE"
+                self.wave.run(price)
+                
+        except Exception as e:
+            logger.error(f"Error: {e}")
+
+if __name__ == "__main__":
+    bot = HybridSupervisor()
+    print("🤖 Hybrid Manager Started... (Press Ctrl+C to stop)")
+    while True:
+        bot.decide()
+        time.sleep(5)
+

@@ -1,0 +1,95 @@
+import logging
+import time
+import pandas as pd
+import talib
+import numpy as np
+from kiteconnect import KiteConnect
+
+# --- CONFIGURATION ---
+API_KEY = "YOUR_API_KEY"
+ACCESS_TOKEN = "YOUR_ACCESS_TOKEN"
+
+# Strategy Settings
+SYMBOL = "NIFTY 50"
+FUT_SYMBOL = "NIFTY NOV FUT"
+TOKEN_FUT = 123456  # Replace with actual Nifty Fut Token
+TOKEN_INDEX = 256265 # Nifty 50 Index Token
+
+# Logic Thresholds
+ADX_THRESHOLD = 25        # Below 25 = Choppy, Above 25 = Trending
+OI_CHANGE_LIMIT = -5      # If OI drops by 5%, it's a breakout (Short Covering)
+
+# --- MOCK STRATEGIES (Replace with real imports later) ---
+def run_wave_strategy(price):
+    print(f"🌊 [WAVE ACTIVE] Market is Choppy. Buying dips/Selling rips at {price}")
+
+def run_survivor_strategy(price, trend):
+    print(f"🚀 [SURVIVOR ACTIVE] Trend Detected ({trend})! Chasing price at {price}")
+
+# --- SUPERVISOR ---
+class HybridSupervisor:
+    def __init__(self):
+        self.kite = KiteConnect(api_key=API_KEY)
+        self.kite.set_access_token(ACCESS_TOKEN)
+        self.active_mode = "NEUTRAL"
+
+    def get_market_data(self):
+        # Fetch last 100 candles for ADX calculation
+        print("🔍 Fetching Market Data & Open Interest...")
+        # Note: In real code, ensure you have Historical Data API or use a workaround
+        # Here we mock the dataframe for demonstration
+        data = {
+            'close': np.random.normal(25000, 100, 100),
+            'high': np.random.normal(25100, 100, 100),
+            'low': np.random.normal(24900, 100, 100),
+            'oi': np.random.randint(100000, 200000, 100)
+        }
+        df = pd.DataFrame(data)
+        return df
+
+    def calculate_indicators(self, df):
+        # 1. Calculate ADX (Trend Strength)
+        df['adx'] = talib.ADX(df['high'], df['low'], df['close'], timeperiod=14)
+        current_adx = df['adx'].iloc[-1]
+        
+        # 2. Calculate OI Change (Short Covering Check)
+        current_oi = df['oi'].iloc[-1]
+        prev_oi = df['oi'].iloc[-2]
+        oi_change_pct = ((current_oi - prev_oi) / prev_oi) * 100
+        
+        return current_adx, oi_change_pct
+
+    def decide(self):
+        try:
+            df = self.get_market_data()
+            adx, oi_change = self.calculate_indicators(df)
+            current_price = df['close'].iloc[-1]
+            
+            print(f"📊 STATUS: Price={current_price:.0f} | ADX={adx:.1f} | OI Change={oi_change:.2f}%")
+            
+            # --- DECISION ENGINE ---
+            
+            # Condition 1: Strong Trend (High ADX) OR Short Covering (OI Drop)
+            if adx > ADX_THRESHOLD or oi_change < OI_CHANGE_LIMIT:
+                if self.active_mode != "SURVIVOR":
+                    print("⚠️ SWITCHING MODE: Trend Detected! Stopping Wave, Starting Survivor.")
+                self.active_mode = "SURVIVOR"
+                trend_dir = "UP" if df['close'].iloc[-1] > df['close'].iloc[-5] else "DOWN"
+                run_survivor_strategy(current_price, trend_dir)
+                
+            # Condition 2: Choppy Market (Low ADX) AND Stable OI
+            else:
+                if self.active_mode != "WAVE":
+                    print("✅ SWITCHING MODE: Market is Choppy. Starting Wave Strategy.")
+                self.active_mode = "WAVE"
+                run_wave_strategy(current_price)
+                
+        except Exception as e:
+            print(f"❌ Error in supervisor: {e}")
+
+if __name__ == "__main__":
+    bot = HybridSupervisor()
+    print("🤖 Hybrid Supervisor Started...")
+    while True:
+        bot.decide()
+        time.sleep(60) # Check every minute
